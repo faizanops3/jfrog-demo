@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus
+    restart: unless-stopped
+    ports:
+      - "8081:8081" # <--- CRITICAL: Required to access the UI
+    networks:
+      - registry
+    volumes:
+      - nexus-data:/nexus-data
+    environment:
+      # Lab settings: Min 512MB, Max 2GB RAM.
+      # If this crashes, increase Xmx to 2703m (official recommendation).
+      - INSTALL4J_ADD_VM_PARAMS=-Xms512m -Xmx2048m -XX:MaxDirectMemorySize=2g
+
+networks:
+  registry:
+    driver: bridge # Changed from 'external: true' so it creates the network automatically
+
+volumes:
+  nexus-data:
