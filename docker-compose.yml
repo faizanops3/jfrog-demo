@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------------
+  # JFROG ARTIFACTORY PRO
+  # ---------------------------------------------------------------------------
+  artifactory:
+    image: releases-docker.jfrog.io/jfrog/artifactory-pro:7.111.11
+    container_name: artifactory
+    ports:
+      - "8081:8081" # Artifactory Traffic
+      - "8082:8082" # Router Traffic (Main UI Access)
+    depends_on:
+      - postgres
+    environment:
+      # -- Database Configuration --
+      # These variables automatically update system.yaml to connect to the postgres container
+      - JF_SHARED_DATABASE_TYPE=postgresql
+      - JF_SHARED_DATABASE_DRIVER=org.postgresql.Driver
+      - JF_SHARED_DATABASE_URL=jdbc:postgresql://postgres:5432/artifactory
+      - JF_SHARED_DATABASE_USERNAME=artifactory
+      - JF_SHARED_DATABASE_PASSWORD=password
+
+      # -- Node Configuration --
+      # Prevents IP resolution issues in basic docker setups
+      - JF_SHARED_NODE_IP=127.0.0.1
+      - JF_SHARED_NODE_ID=artifactory-node-1
+
+      # -- Java Options (Optional) --
+      # Adjust Xmx (Max RAM) based on your host machine.
+      # 2g is a bare minimum for Pro; 4g+ is recommended.
+      - JF_JAVA_OPTS=-Xms512m -Xmx4g
+
+    volumes:
+      - artifactory_data:/var/opt/jfrog/artifactory
+
+    # -- System Requirements --
+    # Artifactory requires high ulimits or it will crash on startup
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # POSTGRESQL DATABASE
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_DB=artifactory
+      - POSTGRES_USER=artifactory
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+# ---------------------------------------------------------------------------
+# VOLUMES
+# Using named volumes lets Docker manage the complex permission requirements
+# ---------------------------------------------------------------------------
+volumes:
+  artifactory_data:
+  postgres_data:
