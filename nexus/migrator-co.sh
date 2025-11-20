@@ -12,7 +12,7 @@ NEXUS_PASS="Admin123"
 
 # TARGET: JFrog Artifactory OSS
 ART_BASE_URL="http://65.109.137.18:8082/artifactory"
-ART_REPO_NAME="libs-release-local"
+ART_REPO_NAME="libs-release-local" # ENSURE THIS REPO EXISTS IN ARTIFACTORY
 ART_USER="admin"
 ART_PASS="Admin123"
 
@@ -27,6 +27,20 @@ WORK_DIR="./migration_temp"
 if ! command -v jq &> /dev/null; then
     echo "[ERROR] 'jq' is not installed. Please install it (e.g., sudo apt install jq)."
     exit 1
+fi
+
+# 2. Pre-flight Check: Verify Artifactory Repo Exists
+echo "[CHECK] Verifying target repository: $ART_REPO_NAME..."
+REPO_CHECK_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$ART_USER:$ART_PASS" "$ART_BASE_URL/api/repositories/$ART_REPO_NAME")
+
+if [[ "$REPO_CHECK_CODE" == "400" || "$REPO_CHECK_CODE" == "404" ]]; then
+    echo "[CRITICAL ERROR] Repository '$ART_REPO_NAME' does not exist in Artifactory."
+    echo "Please log in to Artifactory -> Admin -> Repositories -> Local -> New -> Maven."
+    echo "Create a repository named '$ART_REPO_NAME' and try again."
+    exit 1
+elif [[ "$REPO_CHECK_CODE" == "401" || "$REPO_CHECK_CODE" == "403" ]]; then
+     echo "[CRITICAL ERROR] Authentication failed for Artifactory. Check your username/password."
+     exit 1
 fi
 
 mkdir -p "$WORK_DIR"
@@ -49,6 +63,12 @@ while true; do
     # Fetch JSON response
     RESPONSE=$(curl -s -u "$NEXUS_USER:$NEXUS_PASS" "$API_URL")
     
+    # Check if Nexus Login worked
+    if echo "$RESPONSE" | grep -q "401"; then
+        echo "[ERROR] Failed to authenticate with Nexus. Check Nexus username/password."
+        exit 1
+    fi
+
     # Extract Items (DownloadURL and Path) safely using jq
     # Format: URL <tab> PATH
     echo "$RESPONSE" | jq -r '.items[] | "\(.downloadUrl)\t\(.path)"' | while IFS=$'\t' read -r DOWNLOAD_URL ARTIFACT_PATH; do
