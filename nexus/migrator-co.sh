@@ -5,7 +5,7 @@
 # ==========================================
 
 # SOURCE: Sonatype Nexus
-NEXUS_BASE_URL="http://128.140.89.42:8081"
+NEXUS_BASE_URL="http://localhost:8081"
 NEXUS_REPO_NAME="c4e"
 NEXUS_USER="admin"
 NEXUS_PASS="Admin123"
@@ -14,7 +14,7 @@ NEXUS_PASS="Admin123"
 ART_BASE_URL="http://65.109.137.18:8082/artifactory"
 ART_REPO_NAME="libs-release-local"
 ART_USER="admin"
-ART_PASS="Admin123"  # Updated based on your last message
+ART_PASS="Admin123"
 
 # TEMP DIRECTORY
 WORK_DIR="./migration_temp"
@@ -22,6 +22,10 @@ WORK_DIR="./migration_temp"
 # ==========================================
 # MIGRATION LOGIC
 # ==========================================
+
+# 0. Clean Environment
+unset http_proxy
+unset https_proxy
 
 # 1. Check for jq
 if ! command -v jq &> /dev/null; then
@@ -34,9 +38,10 @@ mkdir -p "$WORK_DIR"
 echo "=========================================="
 echo " STARTING MIGRATION: $NEXUS_REPO_NAME -> $ART_REPO_NAME"
 echo "=========================================="
-echo "[INFO] Skipping pre-flight check. Attempting direct migration..."
+echo "[INFO] Source: $NEXUS_BASE_URL"
 
 CONTINUATION_TOKEN=""
+TEMP_RESPONSE_FILE=$(mktemp)
 
 while true; do
     # Construct API URL
@@ -47,17 +52,25 @@ while true; do
 
     echo "[INFO] Fetching asset list from Nexus..."
     
-    # Fetch JSON response
-    RESPONSE=$(curl -s -u "$NEXUS_USER:$NEXUS_PASS" "$API_URL")
+    # Fetch JSON response using temp file strategy to avoid curl formatting issues
+    HTTP_CODE=$(curl -s -o "$TEMP_RESPONSE_FILE" -w "%{http_code}" -u "$NEXUS_USER:$NEXUS_PASS" "$API_URL")
     
-    # Check if Nexus Login worked
-    if echo "$RESPONSE" | grep -q "401"; then
-        echo "[ERROR] Failed to authenticate with Nexus. Check Nexus username/password."
+    # Analyze Nexus Response
+    if [[ "$HTTP_CODE" != "200" ]]; then
+        echo "---------------------------------------------------"
+        echo "[CRITICAL ERROR] Nexus API Failed (HTTP $HTTP_CODE)."
+        echo "---------------------------------------------------"
+        echo "Response Body:"
+        cat "$TEMP_RESPONSE_FILE"
+        echo ""
+        echo "---------------------------------------------------"
+        rm "$TEMP_RESPONSE_FILE"
         exit 1
     fi
 
     # Extract Items
-    echo "$RESPONSE" | jq -r '.items[] | "\(.downloadUrl)\t\(.path)"' | while IFS=$'\t' read -r DOWNLOAD_URL ARTIFACT_PATH; do
+    # We read from the temp file to ensure clean JSON parsing
+    cat "$TEMP_RESPONSE_FILE" | jq -r '.items[] | "\(.downloadUrl)\t\(.path)"' | while IFS=$'\t' read -r DOWNLOAD_URL ARTIFACT_PATH; do
         
         # Clean path
         CLEAN_PATH=${ARTIFACT_PATH#/}
@@ -67,7 +80,7 @@ while true; do
         curl -s -u "$NEXUS_USER:$NEXUS_PASS" -o "$LOCAL_FILE" "$DOWNLOAD_URL"
         
         if [ ! -f "$LOCAL_FILE" ]; then
-            echo "[ERROR] Failed to download $CLEAN_PATH"
+            echo "[WARN] Failed to download $CLEAN_PATH. Skipping."
             continue
         fi
 
@@ -76,24 +89,19 @@ while true; do
 
         # C. UPLOAD TO ARTIFACTORY
         TARGET_URL="${ART_BASE_URL}/${ART_REPO_NAME}/${CLEAN_PATH}"
-        echo "[UPLOAD] uploading to: $TARGET_URL"
+        echo "[UPLOAD] Sending $CLEAN_PATH..."
         
-        # Verbose output for debugging
-        HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+        HTTP_CODE_ART=$(curl -s -o /dev/null -w "%{http_code}" \
             -u "$ART_USER:$ART_PASS" \
             -X PUT \
             -H "X-Checksum-Sha1: $CHECKSUM" \
             -T "$LOCAL_FILE" \
             "$TARGET_URL")
 
-        HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
-        RESPONSE_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
-
-        if [[ "$HTTP_CODE" == "201" || "$HTTP_CODE" == "200" ]]; then
-            echo "[SUCCESS] Uploaded $CLEAN_PATH"
+        if [[ "$HTTP_CODE_ART" == "201" || "$HTTP_CODE_ART" == "200" ]]; then
+            echo "    [OK] Success"
         else
-            echo "[ERROR] Upload failed (HTTP $HTTP_CODE)"
-            echo "        Response: $RESPONSE_BODY"
+            echo "    [FAIL] HTTP $HTTP_CODE_ART"
         fi
 
         # D. CLEANUP
@@ -102,14 +110,15 @@ while true; do
     done
 
     # Check for next page
-    CONTINUATION_TOKEN=$(echo "$RESPONSE" | jq -r '.continuationToken')
+    CONTINUATION_TOKEN=$(cat "$TEMP_RESPONSE_FILE" | jq -r '.continuationToken')
     
     if [ "$CONTINUATION_TOKEN" == "null" ] || [ -z "$CONTINUATION_TOKEN" ]; then
         echo "=========================================="
-        echo " NO MORE PAGES. MIGRATION COMPLETE."
+        echo " MIGRATION COMPLETE."
         echo "=========================================="
         break
     fi
 done
 
+rm "$TEMP_RESPONSE_FILE"
 rm -rf "$WORK_DIR"
