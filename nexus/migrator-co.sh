@@ -5,13 +5,13 @@
 # ==========================================
 
 # SOURCE: Sonatype Nexus
-NEXUS_BASE_URL="http://localhost:8081"
+NEXUS_BASE_URL="http://128.140.89.42:8081"
 NEXUS_REPO_NAME="c4e"
 NEXUS_USER="admin"
 NEXUS_PASS="Admin123"
 
 # TARGET: JFrog Artifactory OSS
-ART_BASE_URL="http://localhost:8082/artifactory"
+ART_BASE_URL="http://65.109.137.18:8082/artifactory"
 ART_REPO_NAME="libs-release-local"
 ART_USER="admin"
 ART_PASS="Admin123"
