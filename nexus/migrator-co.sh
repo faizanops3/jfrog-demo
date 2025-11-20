@@ -12,9 +12,9 @@ NEXUS_PASS="Admin123"
 
 # TARGET: JFrog Artifactory OSS
 ART_BASE_URL="http://65.109.137.18:8082/artifactory"
-ART_REPO_NAME="libs-release-local" # ENSURE THIS REPO EXISTS IN ARTIFACTORY
+ART_REPO_NAME="libs-release-local"
 ART_USER="admin"
-ART_PASS="Admin123"
+ART_PASS="Admin123" # Ensure this is correct!
 
 # TEMP DIRECTORY
 WORK_DIR="./migration_temp"
@@ -33,15 +33,18 @@ fi
 echo "[CHECK] Verifying target repository: $ART_REPO_NAME..."
 REPO_CHECK_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$ART_USER:$ART_PASS" "$ART_BASE_URL/api/repositories/$ART_REPO_NAME")
 
-if [[ "$REPO_CHECK_CODE" == "400" || "$REPO_CHECK_CODE" == "404" ]]; then
-    echo "[CRITICAL ERROR] Repository '$ART_REPO_NAME' does not exist in Artifactory."
-    echo "Please log in to Artifactory -> Admin -> Repositories -> Local -> New -> Maven."
-    echo "Create a repository named '$ART_REPO_NAME' and try again."
+if [[ "$REPO_CHECK_CODE" == "404" || "$REPO_CHECK_CODE" == "400" ]]; then
+    echo "[CRITICAL ERROR] Repository '$ART_REPO_NAME' does not exist (HTTP $REPO_CHECK_CODE)."
+    echo "Please check the name or create it in Artifactory."
     exit 1
 elif [[ "$REPO_CHECK_CODE" == "401" || "$REPO_CHECK_CODE" == "403" ]]; then
-     echo "[CRITICAL ERROR] Authentication failed for Artifactory. Check your username/password."
+     echo "[CRITICAL ERROR] Authentication failed (HTTP $REPO_CHECK_CODE). Check Artifactory username/password."
+     exit 1
+elif [[ "$REPO_CHECK_CODE" == "000" ]]; then
+     echo "[CRITICAL ERROR] Cannot connect to Artifactory at $ART_BASE_URL. Check IP and Firewall."
      exit 1
 fi
+echo "[CHECK] Target repository found."
 
 mkdir -p "$WORK_DIR"
 
@@ -73,14 +76,15 @@ while true; do
     # Format: URL <tab> PATH
     echo "$RESPONSE" | jq -r '.items[] | "\(.downloadUrl)\t\(.path)"' | while IFS=$'\t' read -r DOWNLOAD_URL ARTIFACT_PATH; do
         
-        LOCAL_FILE="$WORK_DIR/$(basename "$ARTIFACT_PATH")"
+        # Strip leading slash if present in path to prevent double slashes in URL
+        CLEAN_PATH=${ARTIFACT_PATH#/}
+        LOCAL_FILE="$WORK_DIR/$(basename "$CLEAN_PATH")"
         
         # A. DOWNLOAD
-        # echo "[DOWN] Downloading $ARTIFACT_PATH..."
         curl -s -u "$NEXUS_USER:$NEXUS_PASS" -o "$LOCAL_FILE" "$DOWNLOAD_URL"
         
         if [ ! -f "$LOCAL_FILE" ]; then
-            echo "[ERROR] Failed to download $ARTIFACT_PATH"
+            echo "[ERROR] Failed to download $CLEAN_PATH"
             continue
         fi
 
@@ -88,19 +92,25 @@ while true; do
         CHECKSUM=$(sha1sum "$LOCAL_FILE" | awk '{print $1}')
 
         # C. UPLOAD TO ARTIFACTORY
-        TARGET_URL="${ART_BASE_URL}/${ART_REPO_NAME}/${ARTIFACT_PATH}"
-        echo "[UPLOAD] Processing: $ARTIFACT_PATH"
+        TARGET_URL="${ART_BASE_URL}/${ART_REPO_NAME}/${CLEAN_PATH}"
+        echo "[UPLOAD] Processing: $CLEAN_PATH"
         
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        # Capture both HTTP Code and Response Body for debugging
+        HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
             -u "$ART_USER:$ART_PASS" \
+            -X PUT \
             -H "X-Checksum-Sha1: $CHECKSUM" \
             -T "$LOCAL_FILE" \
             "$TARGET_URL")
 
+        HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+        RESPONSE_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+
         if [[ "$HTTP_CODE" == "201" || "$HTTP_CODE" == "200" ]]; then
-            echo "[SUCCESS] Uploaded $ARTIFACT_PATH"
+            echo "[SUCCESS] Uploaded $CLEAN_PATH"
         else
-            echo "[ERROR] Upload failed for $ARTIFACT_PATH (HTTP $HTTP_CODE)"
+            echo "[ERROR] Upload failed for $CLEAN_PATH (HTTP $HTTP_CODE)"
+            echo "        Server Message: $RESPONSE_BODY"
         fi
 
         # D. CLEANUP
